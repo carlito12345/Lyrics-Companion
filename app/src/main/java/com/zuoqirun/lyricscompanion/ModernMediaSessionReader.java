@@ -125,14 +125,15 @@ final class ModernMediaSessionReader implements MusicSessionReader {
         int bestScore = Integer.MIN_VALUE;
         if (sessions != null) {
             for (MediaController candidate : sessions) {
-                if (candidate == null || context.getPackageName().equals(candidate.getPackageName())) {
+                if (candidate == null || isUnbridgedSelfSession(candidate)) {
                     continue;
                 }
                 if (!isUsableSession(candidate)) continue;
                 MediaMetadata metadata = candidate.getMetadata();
                 PlaybackState state = candidate.getPlaybackState();
-                MusicAppRegistry.App app = MusicAppRegistry.resolve(candidate.getPackageName(),
-                        applicationLabel(candidate.getPackageName()));
+                String sourcePackage = sourcePackage(candidate);
+                MusicAppRegistry.App app = MusicAppRegistry.resolve(sourcePackage,
+                        applicationLabel(sourcePackage));
                 int score = MusicAppRegistry.selectionScore(playbackRank(state),
                         hasMetadata(metadata), supportsControls(state), app.known,
                         sameSession(selectedController, candidate));
@@ -147,15 +148,16 @@ final class ModernMediaSessionReader implements MusicSessionReader {
             callback.onNoSession();
             return;
         }
-        callback.onSession(best.getPackageName(), applicationLabel(best.getPackageName()),
-                playbackData(best, best.getMetadata(), best.getPlaybackState()));
+        String sourcePackage = sourcePackage(best);
+        callback.onSession(sourcePackage, applicationLabel(sourcePackage),
+                playbackData(best, sourcePackage, best.getMetadata(), best.getPlaybackState()));
     }
 
     private void syncObservedSessions(List<MediaController> sessions) {
         Map<MediaSession.Token, MediaController> next = new HashMap<>();
         if (sessions != null) {
             for (MediaController candidate : sessions) {
-                if (candidate == null || context.getPackageName().equals(candidate.getPackageName())) {
+                if (candidate == null || isUnbridgedSelfSession(candidate)) {
                     continue;
                 }
                 MediaSession.Token token = candidate.getSessionToken();
@@ -177,8 +179,8 @@ final class ModernMediaSessionReader implements MusicSessionReader {
         kuwoLyrics.keySet().retainAll(next.keySet());
     }
 
-    private MusicPlaybackData playbackData(MediaController controller, MediaMetadata metadata,
-                                           PlaybackState state) {
+    private MusicPlaybackData playbackData(MediaController controller, String sourcePackage,
+                                           MediaMetadata metadata, PlaybackState state) {
         String title = firstNonEmpty(metadata,
                 MediaMetadata.METADATA_KEY_TITLE, MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
         String artist = firstNonEmpty(metadata,
@@ -193,7 +195,7 @@ final class ModernMediaSessionReader implements MusicSessionReader {
         long duration = metadata == null ? -1L
                 : metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
         LrcTimeline sessionTimeline = LrcTimeline.EMPTY;
-        if ("cn.kuwo.kwmusiccar".equals(controller.getPackageName())) {
+        if ("cn.kuwo.kwmusiccar".equals(sourcePackage)) {
             KuwoSessionLyrics reader = kuwoLyrics.get(controller.getSessionToken());
             if (reader == null) {
                 reader = new KuwoSessionLyrics();
@@ -221,6 +223,27 @@ final class ModernMediaSessionReader implements MusicSessionReader {
             CharSequence label = manager.getApplicationLabel(info);
             return label == null ? "" : label.toString().trim();
         } catch (PackageManager.NameNotFoundException | SecurityException ignored) {
+            return "";
+        }
+    }
+
+    private boolean isUnbridgedSelfSession(MediaController controller) {
+        return context.getPackageName().equals(controller.getPackageName())
+                && sourcePackageExtra(controller).isEmpty();
+    }
+
+    private String sourcePackage(MediaController controller) {
+        String bridged = sourcePackageExtra(controller);
+        return bridged.isEmpty() ? controller.getPackageName() : bridged;
+    }
+
+    private static String sourcePackageExtra(MediaController controller) {
+        try {
+            Bundle extras = controller.getExtras();
+            String value = extras == null ? ""
+                    : extras.getString("com.geely.desktop.extra.SOURCE_PACKAGE", "");
+            return value == null ? "" : value.trim();
+        } catch (RuntimeException ignored) {
             return "";
         }
     }

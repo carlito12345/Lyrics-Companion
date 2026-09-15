@@ -2529,6 +2529,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void checkForUpdates(boolean manual) {
+        if ("com.geely.desktop".equals(getPackageName())) {
+            if (manual && updateStatus != null) updateStatus.setText("由 GEELY DESKTOP 主程序统一更新");
+            return;
+        }
         if (updateBusy || updateStatus == null) return;
         updateBusy = true;
         if (manual) updateStatus.setText("正在检查更新…");
