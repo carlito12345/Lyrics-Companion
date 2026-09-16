@@ -2667,15 +2667,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean hasNotificationAccess() {
-        String enabled = Settings.Secure.getString(getContentResolver(),
-                "enabled_notification_listeners");
-        if (enabled == null) return false;
-        ComponentName expected = new ComponentName(this, MusicNotificationListener.class);
-        String[] entries = enabled.split(":");
-        for (String entry : entries) {
-            if (expected.equals(ComponentName.unflattenFromString(entry))) return true;
-        }
-        return false;
+        return MusicNotificationListener.hasNotificationAccess(this);
     }
 
     private boolean canDrawOverlays() {

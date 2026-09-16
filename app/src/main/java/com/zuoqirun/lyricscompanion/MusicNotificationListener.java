@@ -17,7 +17,7 @@ import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
 /** Selects MediaSession on API 21+, or RemoteController on Android 4.4. */
-public final class MusicNotificationListener extends NotificationListenerService
+public class MusicNotificationListener extends NotificationListenerService
         implements RemoteController.OnClientUpdateListener {
     private static final String TAG = "LyricsMediaSession";
     private static final long SESSION_POLL_MS = 600L;
@@ -216,7 +216,7 @@ public final class MusicNotificationListener extends NotificationListenerService
     private void startListening() {
         if (connected) return;
         stopReader();
-        ComponentName component = new ComponentName(this, MusicNotificationListener.class);
+        ComponentName component = new ComponentName(this, getClass());
         if (Build.VERSION.SDK_INT >= 21) {
             backendName = "MediaSession";
             sessionReader = Api21.createReader(this, component, handler, readerCallback);
@@ -512,15 +512,21 @@ public final class MusicNotificationListener extends NotificationListenerService
     }
 
     static boolean hasNotificationAccess(Context context) {
-        if (context == null) return false;
+        return enabledNotificationListenerComponent(context) != null;
+    }
+
+    private static ComponentName enabledNotificationListenerComponent(Context context) {
+        if (context == null) return null;
         String enabled = Settings.Secure.getString(context.getContentResolver(),
                 "enabled_notification_listeners");
-        if (enabled == null) return false;
-        ComponentName expected = new ComponentName(context, MusicNotificationListener.class);
+        if (enabled == null) return null;
         for (String entry : enabled.split(":")) {
-            if (expected.equals(ComponentName.unflattenFromString(entry))) return true;
+            ComponentName component = ComponentName.unflattenFromString(entry);
+            if (component != null && context.getPackageName().equals(component.getPackageName())) {
+                return component;
+            }
         }
-        return false;
+        return null;
     }
 
     static void requestReconnect(Context context) {
@@ -538,7 +544,11 @@ public final class MusicNotificationListener extends NotificationListenerService
         if (now - lastReconnectRequestElapsedMs < 2_000L) return;
         lastReconnectRequestElapsedMs = now;
         Context appContext = context.getApplicationContext();
-        ComponentName component = new ComponentName(appContext, MusicNotificationListener.class);
+        MusicNotificationListener active = activeInstance;
+        ComponentName component = active == null
+                ? enabledNotificationListenerComponent(appContext)
+                : new ComponentName(appContext, active.getClass());
+        if (component == null) return;
         DiagnosticLog.record(appContext, "MediaSession", "reconnect requested api="
                 + Build.VERSION.SDK_INT + " unhealthyForMs="
                 + Math.max(0L, now - reconnectStartedElapsedMs));
