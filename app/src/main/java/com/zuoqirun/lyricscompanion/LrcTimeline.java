@@ -43,6 +43,24 @@ final class LrcTimeline {
         return bytes.toByteArray();
     }
 
+    /** Compact lossless timeline consumed by the desktop music visual bridge. */
+    String toEnhancedLyrics() {
+        StringBuilder out = new StringBuilder();
+        for (Line line : lines) {
+            out.append('[').append(line.timeMs).append(',').append(line.durationMs).append(']');
+            if (line.words.isEmpty()) {
+                out.append(line.text);
+            } else {
+                for (Word word : line.words) {
+                    out.append('(').append(word.startMs).append(',').append(word.durationMs)
+                            .append(",0)").append(word.text);
+                }
+            }
+            out.append('\n');
+        }
+        return out.toString();
+    }
+
     static LrcTimeline fromCacheBytes(byte[] bytes) throws java.io.IOException {
         if (bytes.length > 12_000_000) throw new java.io.IOException("Cache too large");
         java.io.DataInputStream in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes));

@@ -32,6 +32,8 @@ import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -60,6 +62,9 @@ import java.util.concurrent.Executors;
 @SuppressLint("SetTextI18n")
 public final class MainActivity extends AppCompatActivity {
     private static final int REQUEST_CUSTOM_FONT = 2417;
+    private static final int REQUEST_FONT_STORAGE = 2422;
+    private static final ExecutorService FONT_EXECUTOR = Executors.newSingleThreadExecutor();
+    private String pendingFontDirectory = "";
     private static final int REQUEST_RECORD_AUDIO = 2418;
     private static final int REQUEST_LOCAL_LYRIC_DIRECTORY = 2419;
     private static final int REQUEST_BLUETOOTH_CONNECT = 2420;
@@ -75,6 +80,9 @@ public final class MainActivity extends AppCompatActivity {
     };
     private static final String UPDATE_MANIFEST_URL =
             "https://lyrics-companion.zuoqirun.top/update.json";
+    /** 测试版通道的清单：只包含 GitHub prerelease，正式版通道看不到它。 */
+    private static final String UPDATE_MANIFEST_URL_BETA =
+            "https://lyrics-companion.zuoqirun.top/update-beta.json";
     private static final String UPDATE_HISTORY_URL =
             "https://lyrics-companion.zuoqirun.top/versions";
     private static final String SOURCE_REPOSITORY_URL =
@@ -180,6 +188,7 @@ public final class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         if (savedInstanceState != null) {
             selectedSection = savedInstanceState.getInt(STATE_SELECTED_SECTION, 0);
+            pendingFontDirectory = savedInstanceState.getString("pending_font_directory", "");
         }
         boolean launcherIntent = isLauncherIntent();
         if (launcherIntent) {
@@ -200,10 +209,15 @@ public final class MainActivity extends AppCompatActivity {
         MusicStateStore.initialize(this);
         handler.postDelayed(this::showCommunityAnnouncementIfNeeded, 300L);
         handler.postDelayed(() -> checkForUpdates(false), 2_000L);
+        if (savedInstanceState == null && Intent.ACTION_VIEW.equals(getIntent().getAction())
+                && getIntent().getData() != null) {
+            confirmFontImport(getIntent().getData());
+        }
     }
 
     @Override protected void onSaveInstanceState(Bundle outState) {
         outState.putInt(STATE_SELECTED_SECTION, selectedSection);
+        outState.putString("pending_font_directory", pendingFontDirectory);
         super.onSaveInstanceState(outState);
     }
 
@@ -279,6 +293,17 @@ public final class MainActivity extends AppCompatActivity {
         if (requestCode != REQUEST_CUSTOM_FONT || resultCode != RESULT_OK || data == null) return;
         Uri uri = data.getData();
         if (uri == null) return;
+        importFont(uri);
+    }
+
+    private void confirmFontImport(Uri uri) {
+        new MaterialAlertDialogBuilder(this).setTitle("导入全局字体")
+                .setMessage("将所选字体应用到界面与全部歌词？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("导入", (dialog, which) -> importFont(uri)).show();
+    }
+
+    private void importFont(Uri uri) {
         try {
             String name = CustomFontStore.importFont(this, uri);
             AppPreferences.changed(this);
@@ -700,6 +725,12 @@ public final class MainActivity extends AppCompatActivity {
         historyParams.leftMargin = dp(10);
         updateButtons.addView(versionHistory, historyParams);
         updateCard.addView(updateButtons);
+        MaterialSwitch betaChannel = toggle("加入测试版更新通道",
+                "测试版是最新构建，可能不稳定；随时可以切回正式版");
+        betaChannel.setChecked(UpdateChannelRules.isBeta(AppPreferences.updateChannel(this)));
+        betaChannel.setOnCheckedChangeListener((button, checked) ->
+                changeUpdateChannel(checked, button));
+        updateCard.addView(betaChannel);
 
         LinearLayout openSourceCard = card();
         openSourceCard.addView(sectionLabel("开源与致谢"));
@@ -1460,6 +1491,8 @@ public final class MainActivity extends AppCompatActivity {
                     ? "已授予存储读取权限，正在重新读取本地歌词"
                     : LocalLyricClient.manualDirectorySaveMessage(this), Toast.LENGTH_LONG);
             MusicStateStore.reloadLyrics(this);
+        } else if (requestCode == REQUEST_FONT_STORAGE) {
+            scanFontDirectory(pendingFontDirectory);
         }
     }
 
@@ -2445,9 +2478,20 @@ public final class MainActivity extends AppCompatActivity {
         resetParams.leftMargin = dp(10);
         row.addView(resetButton, resetParams);
         parent.addView(row);
+        MaterialButton scanButton = button("扫描字体目录", false);
+        scanButton.setOnClickListener(v -> chooseFontDirectory());
+        parent.addView(scanButton, new LinearLayout.LayoutParams(-1, dp(46)));
     }
 
     private void openFontPicker() {
+        for (String action : new String[]{Intent.ACTION_OPEN_DOCUMENT, Intent.ACTION_GET_CONTENT}) {
+            Intent fontIntent = new Intent(action).addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/octet-stream")
+                    .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"font/ttf", "font/otf", "font/ttc",
+                            "application/x-font-ttf", "application/x-font-otf", "application/x-font",
+                            "application/ttf", "application/octet-stream"});
+            if (startDocumentPicker(fontIntent)) return;
+        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -2458,6 +2502,61 @@ public final class MainActivity extends AppCompatActivity {
         if (startDocumentPicker(fallback)) return;
         SafeToast.show(this, "此设备没有可用的文件选择器，请安装或启用系统文件管理器后重试。",
                 Toast.LENGTH_LONG);
+    }
+
+    private void chooseFontDirectory() {
+        TextInputLayout layout = new TextInputLayout(this);
+        layout.setHint("字体目录路径");
+        layout.setPadding(dp(20), 0, dp(20), 0);
+        TextInputEditText input = new TextInputEditText(this);
+        input.setSingleLine(true);
+        input.setText(android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS).getAbsolutePath());
+        layout.addView(input);
+        new MaterialAlertDialogBuilder(this).setTitle("扫描字体目录")
+                .setView(layout).setNegativeButton("取消", null)
+                .setNeutralButton("已授权歌词目录", (dialog, which) -> scanFontDirectory(null))
+                .setPositiveButton("扫描", (dialog, which) -> {
+                    pendingFontDirectory = input.getText() == null ? "" : input.getText().toString().trim();
+                    if (!LocalLyricClient.requestManualDirectoryAccess(this, REQUEST_FONT_STORAGE)) {
+                        scanFontDirectory(pendingFontDirectory);
+                    }
+                }).show();
+    }
+
+    private void scanFontDirectory(String path) {
+        if (path != null && !LocalLyricClient.canReadManualDirectory(this)) {
+            SafeToast.show(this, "无法读取该路径，请授予存储读取权限，或使用已授权歌词目录 / 文件管理器打开字体",
+                    Toast.LENGTH_LONG);
+            return;
+        }
+        SafeToast.show(this, "正在扫描字体", Toast.LENGTH_SHORT);
+        FONT_EXECUTOR.execute(() -> {
+            try {
+                List<FontDirectoryScanner.FontFile> fonts = path == null
+                        ? FontDirectoryScanner.scanTree(this, AppPreferences.get(this).getString(
+                                AppPreferences.KEY_LOCAL_LYRIC_DIRECTORY_URI, ""))
+                        : FontDirectoryScanner.scanFiles(new java.io.File(path));
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (fonts.isEmpty()) {
+                        SafeToast.show(this, "未找到可读的 .ttf / .otf / .ttc 字体，请检查目录和权限",
+                                Toast.LENGTH_LONG);
+                        return;
+                    }
+                    String[] names = new String[fonts.size()];
+                    for (int index = 0; index < names.length; index++) names[index] = fonts.get(index).name;
+                    new MaterialAlertDialogBuilder(this).setTitle("选择字体")
+                            .setItems(names, (dialog, which) -> confirmFontImport(fonts.get(which).uri))
+                            .setNegativeButton("取消", null).show();
+                });
+            } catch (Exception error) {
+                handler.post(() -> {
+                    if (!isFinishing() && !isDestroyed()) SafeToast.show(this,
+                            "扫描失败，请检查目录授权或使用文件管理器打开字体", Toast.LENGTH_LONG);
+                });
+            }
+        });
     }
 
     private void openLocalLyricDirectoryPicker() {
@@ -2857,17 +2956,42 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         if (updateBusy || updateStatus == null) return;
+        String requestedChannel = AppPreferences.updateChannel(this);
+        String manifestUrl = UpdateChannelRules.manifestUrl(requestedChannel,
+                UPDATE_MANIFEST_URL, UPDATE_MANIFEST_URL_BETA);
         updateBusy = true;
         if (manual) updateStatus.setText("正在检查更新…");
         UPDATE_EXECUTOR.execute(() -> {
             try {
-                AppUpdater.UpdateInfo info = AppUpdater.check(this, UPDATE_MANIFEST_URL);
+                AppUpdater.UpdateInfo info = AppUpdater.check(this, manifestUrl);
                 runOnUiThread(() -> {
                     updateBusy = false;
                     if (isFinishing() || isDestroyed()) return;
+                    if (!info.available) {
+                        // 占位清单（versionCode 0）：说清是"通道里没有包"，而不是"已是最新"。
+                        updateStatus.setText(UpdateChannelRules.displayName(info.channel)
+                                + "通道暂无可用版本\n" + localVersionText());
+                        return;
+                    }
+                    int skipped = AppPreferences.skippedUpdateVersionCode(this, requestedChannel);
+                    if (UpdateChannelRules.skipPrompt(manual, info.force,
+                            info.remoteVersionCode, skipped)) {
+                        String name = AppPreferences.skippedUpdateVersionName(this, requestedChannel);
+                        updateStatus.setText("已不再提醒 v"
+                                + (name.isEmpty() ? String.valueOf(info.remoteVersionCode) : name)
+                                + " 的更新\n" + localVersionText());
+                        return;
+                    }
                     if (info.hasUpdate()) {
-                        updateStatus.setText("发现新版本 " + info.remoteVersionName);
-                        showUpdateDialog(info);
+                        updateStatus.setText("发现" + (info.isBeta() ? "测试版" : "新版本")
+                                + " " + info.remoteVersionName);
+                        showUpdateDialog(info, requestedChannel);
+                    } else if (UpdateChannelRules.localIsAhead(
+                            info.localVersionCode, info.remoteVersionCode)) {
+                        updateStatus.setText(UpdateChannelRules.displayName(info.channel)
+                                + "通道最新版是 " + info.remoteVersionName
+                                + "，本机版本更高；等正式版发布更高版本号即可更新\n"
+                                + localVersionText());
                     } else if (manual) {
                         updateStatus.setText("已是最新版本\n" + localVersionText());
                     }
@@ -2884,7 +3008,51 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void showUpdateDialog(AppUpdater.UpdateInfo info) {
+    /**
+     * 切换更新通道（正式版 / 测试版）。
+     *
+     * <p>首次开启测试版先讲清风险：确认后才写入偏好，"取消"会把开关拨回去。
+     */
+    private void changeUpdateChannel(boolean beta, CompoundButton view) {
+        if (!beta) {
+            AppPreferences.setUpdateChannel(this, UpdateChannelRules.CHANNEL_STABLE);
+            if (updateStatus != null) updateStatus.setText(localVersionText());
+            return;
+        }
+        if (AppPreferences.betaChannelDisclosed(this)) {
+            AppPreferences.setUpdateChannel(this, UpdateChannelRules.CHANNEL_BETA);
+            if (updateStatus != null) updateStatus.setText(localVersionText());
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("加入测试版更新通道？")
+                .setMessage("测试版是最新构建，可能出现崩溃、卡顿或功能异常，"
+                        + "只建议愿意尝鲜的设备开启。\n\n"
+                        + "开启后可随时切回正式版。测试版的版本号通常高于正式版，"
+                        + "切回正式版后要等正式版发布更高的版本号才能更新。")
+                .setNegativeButton("取消", (dialog, which) -> {
+                    AppPreferences.setUpdateChannel(this, UpdateChannelRules.CHANNEL_STABLE);
+                    if (view != null) view.setChecked(false);
+                })
+                .setPositiveButton("开启", (dialog, which) -> {
+                    AppPreferences.setBetaChannelDisclosed(this, true);
+                    AppPreferences.setUpdateChannel(this, UpdateChannelRules.CHANNEL_BETA);
+                    if (updateStatus != null) updateStatus.setText(localVersionText());
+                    checkForUpdates(true);
+                })
+                .show();
+    }
+
+    /**
+     * 显示更新弹窗。
+     *
+     * @param info 清单内容（{@code info.channel} 是**这个包自己的**通道：测试版端点在新正式版
+     *   更高时会照抄正式版清单，此时它是 stable，用来决定标题文案）。
+     * @param requestedChannel 用户当前选的通道，用来记账「不再提醒」——跳过记录按用户选的通道
+     *   分开存，否则在测试版通道里对某个稳定版点过"不再提醒"会连带影响切回正式版后的提示
+     *   （Codex review P2）。
+     */
+    private void showUpdateDialog(AppUpdater.UpdateInfo info, String requestedChannel) {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(4), dp(18), dp(4));
@@ -2902,7 +3070,11 @@ public final class MainActivity extends AppCompatActivity {
         versionLine.setPadding(0, dp(3), 0, 0);
         summary.addView(versionLine);
         StringBuilder metadata = new StringBuilder();
-        if (info.size > 0L) metadata.append("安装包 ").append(formatApkSize(info.size));
+        if (info.isBeta()) metadata.append("测试版");
+        if (info.size > 0L) {
+            if (metadata.length() > 0) metadata.append("  ·  ");
+            metadata.append("安装包 ").append(formatApkSize(info.size));
+        }
         if (info.force) {
             if (metadata.length() > 0) metadata.append("  ·  ");
             metadata.append("需要更新");
@@ -2932,13 +3104,29 @@ public final class MainActivity extends AppCompatActivity {
         int maxHeight = Math.round(getResources().getDisplayMetrics().heightPixels * 0.58f);
         LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(-1, maxHeight);
         content.addView(scroll, scrollParams);
+        final CheckBox skipThisVersion = new CheckBox(this);
+        if (!info.force) {
+            skipThisVersion.setText("不再提醒此版本（v" + info.remoteVersionName + "）");
+            skipThisVersion.setTextColor(0xFFAFC0D6);
+            skipThisVersion.setPadding(dp(14), dp(6), dp(14), 0);
+            content.addView(skipThisVersion);
+        }
         AlertDialog dialog = new MaterialAlertDialogBuilder(this)
-                .setTitle("发现新版本")
+                .setTitle(info.isBeta() ? "发现测试版更新" : "发现新版本")
                 .setView(content)
                 .setNegativeButton("稍后", null)
                 .setPositiveButton("下载并安装", (ignoredDialog, which) -> installUpdate(info))
                 .create();
         dialog.setOnShowListener(ignored -> setDialogTitleColor(dialog, 0xFFF2F6FB));
+        dialog.setOnDismissListener(ignored -> {
+            if (info.force || !skipThisVersion.isChecked()) return;
+            AppPreferences.skipUpdateVersion(this, requestedChannel,
+                    info.remoteVersionCode, info.remoteVersionName);
+            if (updateStatus != null) {
+                updateStatus.setText("已不再提醒 v" + info.remoteVersionName
+                        + "；点「检查更新」仍可查看\n" + localVersionText());
+            }
+        });
         dialog.show();
     }
 
@@ -2971,7 +3159,8 @@ public final class MainActivity extends AppCompatActivity {
                     .getPackageInfo(getPackageName(), 0);
             long code = Build.VERSION.SDK_INT >= 28
                     ? info.getLongVersionCode() : info.versionCode;
-            return "当前版本 " + info.versionName + " (" + code + ")";
+            return "当前版本 " + info.versionName + " (" + code + ") · "
+                    + UpdateChannelRules.displayName(AppPreferences.updateChannel(this)) + "通道";
         } catch (Throwable ignored) {
             return "当前版本未知";
         }

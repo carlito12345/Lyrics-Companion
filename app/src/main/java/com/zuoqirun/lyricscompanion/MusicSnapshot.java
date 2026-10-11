@@ -4,7 +4,7 @@ import android.graphics.Bitmap;
 
 final class MusicSnapshot {
     static final MusicSnapshot EMPTY = new MusicSnapshot(false, false, "音乐播放器", "", "",
-            null, -1L, 0L, false, false, "", LrcTimeline.At.EMPTY);
+            null, -1L, 0L, false, false, "", LrcTimeline.At.EMPTY, LrcTimeline.EMPTY);
 
     final boolean active;
     final boolean playing;
@@ -18,11 +18,12 @@ final class MusicSnapshot {
     final boolean lyricAvailable;
     final String lyricSourceName;
     final LrcTimeline.At lyrics;
+    final LrcTimeline timeline;
 
     MusicSnapshot(boolean active, boolean playing, String sourceName, String title, String artist,
                   Bitmap albumArt, long durationMs, long positionMs,
                   boolean lyricLoaded, boolean lyricAvailable,
-                  String lyricSourceName, LrcTimeline.At lyrics) {
+                  String lyricSourceName, LrcTimeline.At lyrics, LrcTimeline timeline) {
         this.active = active;
         this.playing = playing;
         this.sourceName = sourceName;
@@ -35,5 +36,6 @@ final class MusicSnapshot {
         this.lyricAvailable = lyricAvailable;
         this.lyricSourceName = lyricSourceName;
         this.lyrics = lyrics;
+        this.timeline = timeline == null ? LrcTimeline.EMPTY : timeline;
     }
 }

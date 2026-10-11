@@ -152,4 +152,11 @@ public class LrcTimelineTest {
         assertEquals(3_000L, timeline.shiftedPosition(2_200L, 1));
         assertEquals(1_000L, timeline.shiftedPosition(2_200L, -1));
     }
+
+    @Test public void desktopExportKeepsEveryWordBoundary() {
+        LrcTimeline timeline = LrcTimeline.parse("", "",
+                "[1000,900](1000,400,0)你(1400,500,0)好");
+        assertEquals("[1000,900](1000,400,0)你(1400,500,0)好\n",
+                timeline.toEnhancedLyrics());
+    }
 }
