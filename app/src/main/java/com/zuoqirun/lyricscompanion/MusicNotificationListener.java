@@ -406,7 +406,7 @@ public class MusicNotificationListener extends NotificationListenerService
     }
 
     static boolean openActivePlayer(Context context) {
-        String packageName = activePlayerPackageName;
+        String packageName = activePlayerPackageName();
         if (packageName == null || packageName.trim().isEmpty()) return false;
         try {
             Intent launch = context.getPackageManager().getLaunchIntentForPackage(packageName);
@@ -421,11 +421,21 @@ public class MusicNotificationListener extends NotificationListenerService
     }
 
     static String activePlayerPackageName() {
-        String packageName = activePlayerPackageName;
+        String external = MusicStateStore.externalPlayerPackage();
+        String packageName = external != null ? external : activePlayerPackageName;
         return packageName == null ? "" : packageName.trim();
     }
 
+    interface ExternalPlaybackControl { void request(MediaControlAction action); }
+    private static volatile ExternalPlaybackControl externalPlaybackControl;
+
+    static void setExternalPlaybackControl(ExternalPlaybackControl control) {
+        externalPlaybackControl = control;
+    }
+
     static void requestPlaybackControl(Context context, MediaControlAction action) {
+        ExternalPlaybackControl external = externalPlaybackControl;
+        if (external != null && action != null) { external.request(action); return; }
         MusicNotificationListener listener = activeInstance;
         if (listener == null || action == null) return;
         listener.handler.post(() -> listener.dispatchPlaybackControl(action));
@@ -558,7 +568,7 @@ public class MusicNotificationListener extends NotificationListenerService
     }
 
     static String getActivePlayerPackageName() {
-        return activePlayerPackageName;
+        return activePlayerPackageName();
     }
 
     static boolean hasNotificationAccess(Context context) {

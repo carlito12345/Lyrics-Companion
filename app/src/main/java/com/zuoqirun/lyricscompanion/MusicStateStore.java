@@ -59,6 +59,7 @@ final class MusicStateStore {
     /** Watches a matched timeline for "matched but will not scroll" (issue #44). */
     private static final StuckLineDetector STUCK_LINE_DETECTOR = new StuckLineDetector();
     private static long lastSourceLogElapsedMs;
+    private static boolean externalPlaybackManaged;
 
     private MusicStateStore() {}
 
@@ -85,9 +86,33 @@ final class MusicStateStore {
 
     static void update(Context context, String newSource, String newSourceName,
                        String newSourcePackage, MusicPlaybackData data) {
+        update(context, newSource, newSourceName, newSourcePackage, data, false);
+    }
+
+    /** An embedding host can supply one already-arbitrated playback stream. */
+    static void setExternalPlaybackManaged(boolean managed) {
+        synchronized (LOCK) {
+            externalPlaybackManaged = managed;
+            CHANNEL_ARBITER.reset();
+        }
+    }
+
+    static String externalPlayerPackage() {
+        synchronized (LOCK) {
+            return externalPlaybackManaged ? sourcePackage : null;
+        }
+    }
+
+    static void updateExternal(Context context, String newSource, String newSourceName,
+                               String newSourcePackage, MusicPlaybackData data) {
+        update(context, newSource, newSourceName, newSourcePackage, data, true);
+    }
+
+    private static void update(Context context, String newSource, String newSourceName,
+                               String newSourcePackage, MusicPlaybackData data, boolean external) {
         initialize(context);
         if (data == null) {
-            clear();
+            clear(external);
             return;
         }
         String normalizedSource = TextUtils.isEmpty(newSource) ? "media" : newSource;
@@ -126,6 +151,7 @@ final class MusicStateStore {
         boolean playbackChangedForLog = false;
         String playbackStateForLog = "";
         synchronized (LOCK) {
+            if (externalPlaybackManaged != external) return;
             boolean sameSource = TextUtils.equals(source, normalizedSource);
             // 同一个 source id 不等于同一个发布者：VLC / Poweramp / AIMP… 都注册成 media
             // （review 第四轮 P2）。
@@ -140,22 +166,24 @@ final class MusicStateStore {
             // both describe the same playback. Letting each write through swaps the track key on
             // every broadcast, which drops the lyric timeline and redraws the panel — the reported
             // flicker. Only one channel owns the state; the other is ignored until it wins.
-            SessionChannelArbiter.Signal incomingSignal = SessionChannelArbiter.Signal.of(
-                    normalizedSource, normalizedSourcePackage, data);
-            SessionChannelArbiter.Decision decision = CHANNEL_ARBITER.decide(incomingSignal, now);
-            if (decision.startsFlap) {
-                DiagnosticLog.record(context, "Playback", "active source flapping from="
-                        + decision.flapFrom + " to=" + decision.flapTo
-                        + " kept=" + decision.signal.describe()
-                        + " holdMs=" + SessionChannelArbiter.HOLD_MS);
-            } else if (decision.accepted && !"same_publisher".equals(decision.reason)
-                    && now - lastSourceLogElapsedMs >= SOURCE_LOG_INTERVAL_MS) {
-                lastSourceLogElapsedMs = now;
-                DiagnosticLog.record(context, "Playback", "active source " + decision.reason
-                        + " source=" + normalizedSource + " package="
-                        + normalizedSourcePackage);
+            if (!external) {
+                SessionChannelArbiter.Signal incomingSignal = SessionChannelArbiter.Signal.of(
+                        normalizedSource, normalizedSourcePackage, data);
+                SessionChannelArbiter.Decision decision = CHANNEL_ARBITER.decide(incomingSignal, now);
+                if (decision.startsFlap) {
+                    DiagnosticLog.record(context, "Playback", "active source flapping from="
+                            + decision.flapFrom + " to=" + decision.flapTo
+                            + " kept=" + decision.signal.describe()
+                            + " holdMs=" + SessionChannelArbiter.HOLD_MS);
+                } else if (decision.accepted && !"same_publisher".equals(decision.reason)
+                        && now - lastSourceLogElapsedMs >= SOURCE_LOG_INTERVAL_MS) {
+                    lastSourceLogElapsedMs = now;
+                    DiagnosticLog.record(context, "Playback", "active source " + decision.reason
+                            + " source=" + normalizedSource + " package="
+                            + normalizedSourcePackage);
+                }
+                if (!decision.accepted) return;
             }
-            if (!decision.accepted) return;
             boolean netEaseUnsupported = isNetEaseAutoScrollUnsupported(
                     normalizedSource, rawTitle);
             if (netEaseUnsupported && sameSource && !TextUtils.isEmpty(title)) {
@@ -364,13 +392,13 @@ final class MusicStateStore {
                     && !TextUtils.isEmpty(incomingLiveSessionLyric)) {
                 liveSessionLyric = incomingLiveSessionLyric.trim();
             }
-            if (sessionTimelineAllowed && "kuwo".equals(normalizedSource)
-                    && (selectedCatalog.isEmpty() || "auto".equals(selectedCatalog)
-                    || "kuwo".equals(selectedCatalog)) && !data.sessionTimeline.isEmpty()) {
+            if (sessionTimelineAllowed && (external || "kuwo".equals(normalizedSource))
+                    && (external || (selectedCatalog.isEmpty() || "auto".equals(selectedCatalog)
+                    || "kuwo".equals(selectedCatalog))) && !data.sessionTimeline.isEmpty()) {
                 if (timeline != data.sessionTimeline) {
                     timeline = data.sessionTimeline;
                     trackTimelineLocked(timeline);
-                    lyricSourceName = "酷我播放器歌词";
+                    lyricSourceName = external ? "播放器歌词" : "酷我播放器歌词";
                     lyricLoadFinished = true;
                     usingSessionTimeline = true;
                     DiagnosticLog.record(context, "Kuwo", "session lines=" + timeline.lineCount());
@@ -422,8 +450,17 @@ final class MusicStateStore {
     }
 
     static void clear() {
+        clear(false);
+    }
+
+    static void clearExternal() {
+        clear(true);
+    }
+
+    private static void clear(boolean external) {
         boolean hadState;
         synchronized (LOCK) {
+            if (externalPlaybackManaged != external) return;
             hadState = active || !TextUtils.isEmpty(title);
             active = false;
             playing = false;
@@ -485,8 +522,9 @@ final class MusicStateStore {
      */
     static boolean isChannelAccepted(String newSource, String newSourcePackage,
                                      MusicPlaybackData data) {
-        if (data == null) return true;
         synchronized (LOCK) {
+            if (externalPlaybackManaged) return false;
+            if (data == null) return true;
             long now = SystemClock.elapsedRealtime();
             return CHANNEL_ARBITER.wouldAccept(SessionChannelArbiter.Signal.of(
                     TextUtils.isEmpty(newSource) ? "media" : newSource,
